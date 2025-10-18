@@ -1,5 +1,5 @@
 
-# calcuoates the spectrum graph of a full image
+# Image Spectrometer
 
 ### Webcam, Remove the camera lens or clip the camera view to few pixels pointig to the color sample light
 
