@@ -3,7 +3,7 @@
 
 ### Webcam, Remove the camera lens or clip the camera view to few pixels pointig to the color sample light
 
-###### Created with Gemini and gock AI in 1 hour 
+###### Created with Gemini and grock AI in 1 hour 
 ###### QTCreator 6.8.3
 
 <img width="1042" height="406" alt="yel" src="https://github.com/user-attachments/assets/1ce7fbad-5fb9-4da8-b29c-5f99483e4660" />
