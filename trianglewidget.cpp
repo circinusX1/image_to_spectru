@@ -10,7 +10,24 @@
 #include "dialog.h"
 #include "ui_dialog.h"
 #include "GL/glu.h"
-#include "rgb_to_spectrum.h"
+
+// --- Spectral Locus Data (using 10nm steps) ---
+const QVector<QVector<double>> SPECTRAL_LOCUS_DATA = {
+    // {Wavelength, x, y}
+    {400, 0.1741, 0.0075}, {410, 0.1691, 0.0016}, {420, 0.1714, 0.0039},
+    {430, 0.1804, 0.0084}, {440, 0.1912, 0.0125}, {450, 0.2033, 0.0163},
+    {460, 0.2185, 0.0226}, {470, 0.2401, 0.0381}, {480, 0.2655, 0.0632},
+    {490, 0.2941, 0.1011}, {500, 0.3281, 0.1702}, {510, 0.3599, 0.2709},
+    {520, 0.3807, 0.3875}, {530, 0.3946, 0.5100}, {540, 0.4087, 0.6133},
+    {550, 0.4210, 0.7016}, {560, 0.4326, 0.7770}, {570, 0.4430, 0.8351},
+    {580, 0.4549, 0.8756}, {590, 0.4705, 0.8984}, {600, 0.4916, 0.8967},
+    {610, 0.5168, 0.8727}, {620, 0.5484, 0.8341}, {630, 0.5828, 0.7844},
+    {640, 0.6167, 0.7314}, {650, 0.6482, 0.6800}, {660, 0.6750, 0.6320},
+    {670, 0.6973, 0.5880}, {680, 0.7134, 0.5500}, {690, 0.7258, 0.5218},
+    {700, 0.7347, 0.4997}
+};
+const int NUM_SPECTRAL_POINTS = SPECTRAL_LOCUS_DATA.size();
+
 
 TriangleWidget::TriangleWidget(QWidget *parent)
     : QOpenGLWidget(parent)
@@ -28,8 +45,6 @@ TriangleWidget::TriangleWidget(QWidget *parent)
 
 TriangleWidget::~TriangleWidget()
 {
-
-
     if(m_captureSession)
     {
         m_captureSession->disconnect();
@@ -49,6 +64,162 @@ TriangleWidget::~TriangleWidget()
     doneCurrent();
 }
 
+double TriangleWidget::srgb_to_linear(int c)
+{
+    double val = c / 255.0;
+    if (val <= 0.04045) {
+        return val / 12.92;
+    } else {
+        return std::pow((val + 0.055) / 1.055, 2.4);
+    }
+}
+
+double TriangleWidget::interpolate_wavelength(double x, double y, double xw, double yw,
+                              const QVector<QVector<double>>& locus_data, int num_points)
+{
+    // Check for achromatic color
+    double dist_sq = (x - xw) * (x - xw) + (y - yw) * (y - yw);
+    if (dist_sq < 1e-6) return 550.0;
+
+    // Line A (White to Color) parameters
+    double dx_A = x - xw;
+    double dy_A = y - yw;
+
+    // Iterate through the segments of the spectral locus
+    for (int i = 0; i < num_points - 1; ++i) {
+        double x1 = locus_data[i][1];
+        double y1 = locus_data[i][2];
+        double wavel1 = locus_data[i][0];
+
+        double x2 = locus_data[i+1][1];
+        double y2 = locus_data[i+1][2];
+        double wavel2 = locus_data[i+1][0];
+
+        // Line B (Spectral Segment) parameters
+        double dx_B = x2 - x1;
+        double dy_B = y2 - y1;
+        double det = dx_A * dy_B - dy_A * dx_B; // Determinant
+
+        if (std::abs(det) < 1e-9) continue; // Parallel lines
+
+        // Solve for 's' (parameter along Line B) and 't' (parameter along Line A)
+        double s_numerator = dx_A * (y1 - yw) - dy_A * (x1 - xw);
+        double s = s_numerator / det;
+
+        double t_numerator = dx_B * (y1 - yw) - dy_B * (x1 - xw);
+        double t = t_numerator / det;
+
+        // Intersection found if:
+        // 1. Intersection is on the spectral segment (0 <= s <= 1)
+        // 2. Color point (x, y) is between white point and intersection (t >= 0)
+        if (s >= 0.0 && s <= 1.0 && t >= 0.0) {
+            // Interpolate wavelength
+            return wavel1 + s * (wavel2 - wavel1);
+        }
+    }
+
+    // Handle non-spectral (purple line) colors
+    return 400.0; // Default to lowest visible end for non-spectral
+}
+
+double TriangleWidget::rgb_to_approx_wavelength(int r_srgb, int g_srgb, int b_srgb)
+{
+    // 1. Convert sRGB to linear RGB
+    double r = srgb_to_linear(r_srgb);
+    double g = srgb_to_linear(g_srgb);
+    double b = srgb_to_linear(b_srgb);
+
+    // 2. Apply the sRGB to CIE XYZ (D65 white point) matrix:
+    double X = r * 0.4124564 + g * 0.3575761 + b * 0.1804375;
+    double Y = r * 0.2126729 + g * 0.7151522 + b * 0.0721750;
+    double Z = r * 0.0193339 + g * 0.1191920 + b * 0.9503041;
+
+    if (X + Y + Z < 1e-6) return 550.0;
+
+    // 3. Normalize to get CIE xy Chromaticity Coordinates
+    double x = X / (X + Y + Z);
+    double y = Y / (X + Y + Z);
+
+    // D65 White Point (xw, yw) for sRGB
+    const double xw = 0.3127;
+    const double yw = 0.3290;
+
+    // 4. Calculate dominant wavelength via spectral locus interpolation
+    return interpolate_wavelength(x, y, xw, yw, SPECTRAL_LOCUS_DATA, NUM_SPECTRAL_POINTS);
+}
+
+QColor TriangleWidget::wavelength_to_rgb(double wavel)
+{
+    // This is a simplified function to VISUALIZE the wavelength,
+    // not a rigorous colorimetric conversion.
+    int R=0, G=0, B=0;
+
+    if (wavel >= 645 && wavel <= 780) { // Red
+        R = 255;
+    } else if (wavel >= 580 && wavel < 645) { // Orange/Yellow-Red
+        R = 255;
+        G = (int)(255 * (wavel - 580) / 65);
+    } else if (wavel >= 510 && wavel < 580) { // Green
+        R = (int)(255 * (580 - wavel) / 70);
+        G = 255;
+    } else if (wavel >= 470 && wavel < 510) { // Cyan/Blue-Green
+        G = 255;
+        B = (int)(255 * (wavel - 470) / 40);
+    } else if (wavel >= 400 && wavel < 470) { // Blue/Violet
+        G = (int)(255 * (470 - wavel) / 70);
+        B = 255;
+    } else {
+        return QColor(0, 0, 0, 0); // Outside range or non-spectral
+    }
+
+    // Apply scaling to simulate intensity drop at spectrum ends
+    double factor = 1.0;
+    if (wavel < 420) factor = 0.3 + 0.7 * (wavel - 400) / 20.0;
+    else if (wavel > 680) factor = 0.3 + 0.7 * (700 - wavel) / 20.0;
+
+    return QColor((int)(R * factor), (int)(G * factor), (int)(B * factor));
+}
+
+
+void TriangleWidget::calculateWavelengthHistogram(const QImage& tempImage)
+{
+    spectrt_it_.reserve(NUM_BINS);
+    spectrt_it_.assign(NUM_BINS,0);
+    double bin_width = (MAX_WAVEL - MIN_WAVEL) / NUM_BINS;
+
+    // Ensure the image is in a convenient format for pixel access
+
+    int STEP=8;
+    double smax = 0;
+    for (int y = 0; y < tempImage.height(); y+=STEP)
+    {
+        for (int x = 0; x < tempImage.width(); x+=STEP)
+        {
+            QRgb pixel = tempImage.pixel(x, y);
+            int r = qRed(pixel);
+            int g = qGreen(pixel);
+            int b = qBlue(pixel);
+
+            double wavelength = rgb_to_approx_wavelength(r, g, b);
+
+            if (wavelength >= MIN_WAVEL && wavelength < MAX_WAVEL) {
+                double relative_wavel = wavelength - MIN_WAVEL;
+                int bin_index = static_cast<int>(relative_wavel / bin_width);
+
+                if (bin_index >= NUM_BINS) bin_index = NUM_BINS - 1;
+
+                spectrt_it_[bin_index]++;
+                smax = std::max(smax, spectrt_it_[bin_index]);
+            }
+        }
+    }
+
+    for(auto& a : spectrt_it_)
+    {
+        a /= smax;
+    }
+}
+
 void TriangleWidget::processFrame(const QVideoFrame &frame)
 {
     if (!frame.isValid()) {
@@ -63,18 +234,10 @@ void TriangleWidget::processFrame(const QVideoFrame &frame)
     Dialog* pp = (Dialog*)this->parent();
     if(pp->uii()->widget_2)
     {
-        pp->uii()->widget->setFrame(m_currentFrame);
+        pp->uii()->widget->calculateWavelengthHistogram(m_currentFrame);
     }
     // Mark the texture as dirty so it gets re-uploaded in paintGL
     m_textureDirty = true;
-}
-
-void TriangleWidget::setFrame(QImage& frame)
-{
-    //m_currentFrame = frame;
-    spectrt_it_.clear();
-    spectrt_it_ = ::spectrt_it(frame,  frame.width(),  frame.width());
-    //calculateSpectrum();
 }
 
 void TriangleWidget::initializeGL()
@@ -132,7 +295,6 @@ void TriangleWidget::paintGL()
         drawGridLines();
         drawAxes();
         drawSpectrum2();
-        //drawSpectrum();
         drawLabels();
     }
 }
@@ -182,8 +344,8 @@ void TriangleWidget::drawAxes()
 
     // Y-Axis (x=0, Intensity line)
     glBegin(GL_LINES);
-    glVertex2d(M_WAVELENGTH_MIN, m_Y_MAX);
-    glVertex2d(M_WAVELENGTH_MIN, m_Y_MIN);
+    glVertex2d(MIN_WAVEL, m_Y_MAX);
+    glVertex2d(MIN_WAVEL, m_Y_MIN);
     glEnd();
 }
 
@@ -400,98 +562,13 @@ void TriangleWidget::drawCameraFeed()
     }
 }
 
-static int MAX_FREQ = 1;
-
-void TriangleWidget::calculateHistogram()
-{
-    // Reset histogram and max frequency
-    m_maxFrequency = 1;
-
-    std::fill(m_histogramR, m_histogramR + 256, 0);
-    std::fill(m_histogramG, m_histogramG + 256, 0);
-    std::fill(m_histogramB, m_histogramB + 256, 0);
-
-    if (m_currentFrame.isNull()) return;
-
-    // Iterate through all pixels to count color intensities
-    for (int y = 0; y < m_currentFrame.height(); ++y) {
-        for (int x = 0; x < m_currentFrame.width(); ++x) {
-            // Get the pixel color
-            QRgb rgb = m_currentFrame.pixel(x, y);
-
-            // Extract R, G, B values (0-255)
-            int r = qRed(rgb);
-            int g = qGreen(rgb);
-            int b = qBlue(rgb);
-
-            // Increment counts
-            m_histogramR[r]++;
-            m_histogramG[g]++;
-            m_histogramB[b]++;
-        }
-    }
-
-    // Find the overall maximum frequency for normalization
-    for (int i = 0; i < 256; ++i) {
-        m_maxFrequency = std::max(m_maxFrequency, m_histogramR[i]);
-        m_maxFrequency = std::max(m_maxFrequency, m_histogramG[i]);
-        m_maxFrequency = std::max(m_maxFrequency, m_histogramB[i]);
-    }
-    qDebug("Max freq = "  + m_maxFrequency );
-    MAX_FREQ = m_maxFrequency;
-}
-
-void TriangleWidget::drawHistogram()
-{
-    m_maxFrequency = MAX_FREQ;
-    MAX_FREQ = 1;
-    if (m_maxFrequency < 2) {
-        // Cannot draw normalized plot if max frequency is 0 or 1
-        return;
-    }
-
-    // Drawing the Red Histogram
-    glColor3f(1.0f, 0.0f, 0.0f);
-    glLineWidth(2.0f);
-    glBegin(GL_LINE_STRIP);
-    for (int i = 0; i < 256; ++i) {
-        double x_intensity = (double)i;
-        // Normalize frequency count to fit the Y-axis (0 to 1.0)
-        double y_normalized_freq = (double)m_histogramR[i] / m_maxFrequency;
-        glVertex2d(x_intensity, y_normalized_freq);
-    }
-    glEnd();
-
-    // Drawing the Green Histogram
-    glColor3f(0.0f, 1.0f, 0.0f);
-    glLineWidth(2.0f);
-    glBegin(GL_LINE_STRIP);
-    for (int i = 0; i < 256; ++i) {
-        double x_intensity = (double)i;
-        double y_normalized_freq = (double)m_histogramG[i] / m_maxFrequency;
-        glVertex2d(x_intensity, y_normalized_freq);
-    }
-    glEnd();
-
-    // Drawing the Blue Histogram
-    glColor3f(0.0f, 0.0f, 1.0f);
-    glLineWidth(2.0f);
-    glBegin(GL_LINE_STRIP);
-    for (int i = 0; i < 256; ++i) {
-        double x_intensity = (double)i;
-        double y_normalized_freq = (double)m_histogramB[i] / m_maxFrequency;
-        glVertex2d(x_intensity, y_normalized_freq);
-    }
-    glEnd();
-}
-
 QColor TriangleWidget::wavelengthToRGB(double lambda)
 {
     // Source: Based on simple approximations of CIE curves for visualization (380-750nm)
 
     if (lambda < 380 || lambda > 750) {
         if (lambda < 380)
-           return QColor::fromRgb(30, 30, 90, 100);
+            return QColor::fromRgb(30, 30, 90, 100);
         return QColor::fromRgb(90, 30, 30, 100);
     }
 
@@ -531,123 +608,29 @@ QColor TriangleWidget::wavelengthToRGB(double lambda)
                            std::clamp((int)B, 0, 255));
 }
 
-void TriangleWidget::calculateSpectrum()
-{
-
-    // Reset spectrum
-    std::fill(m_spectrum, m_spectrum + M_WAVELENGTH_BINS, 0.0f);
-    m_maxSpectrumIntensity = 0.01f; // Initialize slightly above zero
-
-    if (m_currentFrame.isNull()) return;
-
-    // 1. Calculate Average RGB
-    long long totalR = 0, totalG = 0, totalB = 0;
-    long long pixelCount = m_currentFrame.width() * m_currentFrame.height();
-    if (pixelCount == 0) return;
-
-    for (int y = 0; y < m_currentFrame.height(); ++y) {
-        for (int x = 0; x < m_currentFrame.width(); ++x) {
-            QRgb rgb = m_currentFrame.pixel(x, y);
-            // Use normalized values (0.0 to 1.0)
-            totalR += qRed(rgb);
-            totalG += qGreen(rgb);
-            totalB += qBlue(rgb);
-
-        }
-    }
-
-    // Normalized average intensity (0.0 to 1.0)
-    float avgR = (float)(totalR / pixelCount) / 255.0f;
-    float avgG = (float)(totalG / pixelCount) / 255.0f;
-    float avgB = (float)(totalB / pixelCount) / 255.0f;
-
-    // 2. Define simplified spectral response centers and bandwidth (in nm)
-    // This is a rough estimation for visualization
-    const double R_CENTER = 620.0;
-    const double G_CENTER = 550.0;
-    const double B_CENTER = 470.0;
-    const double BANDWIDTH = 80.0; // Half-width of the triangular distribution
-
-    memset(m_spectrum,0,sizeof(m_spectrum));
-
-    // 3. Estimate spectral contribution for each wavelength bin
-    for (int i = 0; i < M_WAVELENGTH_BINS; ++i) {
-        double lambda = M_WAVELENGTH_MIN + i * M_WAVELENGTH_STEP;
-
-        // Calculates the intensity contribution of a single color channel (R, G, or B)
-        // for the current wavelength (lambda) using a triangular kernel distribution.
-        auto getContribution = [&](double center, float avgIntensity) -> float {
-            double distance = std::abs(lambda - center);
-            if (distance < BANDWIDTH) {
-                // Linear decay from peak (1.0) at center to 0.0 at BANDWIDTH away
-                return avgIntensity * (1.0f - (distance / BANDWIDTH));
-            }
-            return 0.0f;
-        };
-
-        float r_contrib = getContribution(R_CENTER, avgR);
-        float g_contrib = getContribution(G_CENTER, avgG);
-        float b_contrib = getContribution(B_CENTER, avgB);
-
-        // Sum contributions (Estimated SPD)
-        m_spectrum[i] = r_contrib + g_contrib + b_contrib;
-
-        // Update maximum intensity for normalization
-        m_maxSpectrumIntensity = std::max(m_maxSpectrumIntensity, m_spectrum[i]);
-    }
-
-}
-
-void TriangleWidget::drawSpectrum()
-{
-    // If max intensity is near zero, the normalization will fail or be too noisy.
-    if (m_maxSpectrumIntensity < 0.01f) return;
-
-    glLineWidth(2.0f); // Thicker line for better visibility of the spectrum gradient
-    glBegin(GL_LINE_STRIP);
-
-    // Normalization factor to scale the estimated intensity (Y-axis) from 0 to 1.0
-    float normalizationFactor = 1.0f / m_maxSpectrumIntensity;
-
-    for (int i = 0; i < M_WAVELENGTH_BINS; ++i)
-    {
-        double lambda = M_WAVELENGTH_MIN + i * M_WAVELENGTH_STEP;
-        double x_gl = lambda;
-
-        // Normalize the spectral intensity to the Y-axis range (0 to 1.0)
-        double y_normalized_intensity = m_spectrum[i] * normalizationFactor;
-
-        // Set color based on the current wavelength (spectrum effect)
-        QColor color = wavelengthToRGB(lambda);
-        glColor3f((float)color.red() / 255.0f, (float)color.green() / 255.0f, (float)color.blue() / 255.0f);
-        double p = y_normalized_intensity;///maxy_scale_;
-        if(p>0.1)
-        {
-            glVertex2d(x_gl, p );
-        }
-        if(y_normalized_intensity > maxy_scale_)
-            maxy_scale_ = y_normalized_intensity;
-    }
-    glEnd();
-
-    // Reset color to white for drawing subsequent elements
-    glColor3f(1.0f, 1.0f, 1.0f);
-}
-
 void TriangleWidget::drawSpectrum2()
 {
-    glLineWidth(6.0f);
-    glBegin(GL_LINE_STRIP);
-
-    for (int i = 0; i < spectrt_it_.size(); ++i)
+    if(spectrt_it_.size())
     {
-        double lambda = M_WAVELENGTH_MIN + i;
-        QColor color = wavelengthToRGB(lambda);
+        glPushMatrix();
+        glLoadIdentity();
+        float sx = (float)this->size().width()/(float)NUM_BINS;
+        glScalef(sx,1,1);
+        glLineWidth(2.0f);
+        glBegin(GL_LINE_STRIP);
 
-        glColor3f((float)color.red() / 255.0f, (float)color.green() / 255.0f, (float)color.blue() / 255.0f);
-        //glVertex2d((double)i+m_X_MIN, 0);
-        glVertex2d((double)i+m_X_MIN, spectrt_it_[i]*2);
+        spectrt_it_[int(smax_)]=1.0;
+        for (int i = 0; i < spectrt_it_.size(); ++i)
+        {
+            double lambda = MIN_WAVEL + i*10;
+            QColor color = wavelengthToRGB(lambda);
+
+            glColor3f((float)color.red() / 255.0f, (float)color.green() / 255.0f, (float)color.blue() / 255.0f);
+            //glVertex2d((double)i+m_X_MIN, 0);
+            glVertex2d((double)i, spectrt_it_[i]);
+        }
+        glEnd();
+        glColor3f(1.0f, 1.0f, 1.0f);
+        glPopMatrix();
     }
-    glEnd();
-    glColor3f(1.0f, 1.0f, 1.0f);
 }

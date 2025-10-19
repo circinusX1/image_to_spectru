@@ -11,12 +11,10 @@ CONFIG += c++17
 SOURCES += \
     main.cpp \
     dialog.cpp \
-    rgb_to_spectrum.cpp \
     trianglewidget.cpp
 
 HEADERS += \
     dialog.h \
-    rgb_to_spectrum.h \
     trianglewidget.h
 
 FORMS += \
