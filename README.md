@@ -13,3 +13,9 @@
 
 
 <img width="1043" height="418" alt="redish" src="https://github.com/user-attachments/assets/0068001f-ff3d-45c7-b8ec-4884b7d5caa1" />
+
+
+* Found a funny video:
+
+* 
+    * [![Found this funny video](https://ghitara.com/images/local_gith.png)](https://www.youtube.com/watch?v=OgA7tpEWMzg)
